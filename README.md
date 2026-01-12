@@ -51,6 +51,53 @@ docker run -d \
   ghcr.io/marcdubs/vllm-cloudflared:latest
 ```
 
+## Model Storage & Volumes
+
+vLLM uses HuggingFace's cache system to store downloaded models. The default cache location is:
+
+```
+/root/.cache/huggingface
+```
+
+### Mounting a Volume (Recommended)
+
+For persistent model storage and faster restarts, mount a volume at the HuggingFace cache directory:
+
+```bash
+docker run -d \
+  --gpus all \
+  -v /path/to/model-cache:/root/.cache/huggingface \
+  -e VLLM_MODEL="meta-llama/Llama-2-7b-hf" \
+  ghcr.io/marcdubs/vllm-cloudflared:latest
+```
+
+### RunPod Configuration
+
+When deploying to RunPod, configure the volume mount in your pod template:
+
+**Volume Mount Path:** `/root/.cache/huggingface`
+
+**Environment Variables:**
+```
+VLLM_MODEL=meta-llama/Llama-2-7b-hf
+HF_HOME=/root/.cache/huggingface
+```
+
+This ensures models are cached on persistent storage and don't need to be re-downloaded on each pod restart.
+
+### Custom Cache Location
+
+You can override the cache location using environment variables:
+
+```bash
+docker run -d \
+  --gpus all \
+  -v /path/to/custom-cache:/models \
+  -e HF_HOME=/models \
+  -e VLLM_MODEL="facebook/opt-125m" \
+  ghcr.io/marcdubs/vllm-cloudflared:latest
+```
+
 ## Environment Variables
 
 ### Required
@@ -64,6 +111,9 @@ docker run -d \
 - `VLLM_GPU_MEMORY_UTILIZATION`: Fraction of GPU memory to use (default: `0.9`)
 - `VLLM_MAX_MODEL_LEN`: Maximum model context length
 - `VLLM_EXTRA_ARGS`: Additional arguments to pass to vLLM (e.g., `--dtype auto --trust-remote-code`)
+- `HF_HOME`: HuggingFace cache directory (default: `/root/.cache/huggingface`)
+- `TRANSFORMERS_CACHE`: Alternative to HF_HOME for specifying cache location
+- `HF_TOKEN`: HuggingFace API token (required for gated models like Llama)
 
 ## API Usage
 
