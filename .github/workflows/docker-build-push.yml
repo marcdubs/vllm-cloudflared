@@ -1,0 +1,105 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get upstream image digest
+        id: upstream
+        run: |
+          DIGEST=$(docker manifest inspect vllm/vllm-openai:latest | jq -r '.manifests[0].digest')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Upstream vllm/vllm-openai:latest digest: $DIGEST"
+
+      - name: Check if digest file exists
+        id: check_file
+        run: |
+          if [ -f .last-upstream-digest ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            LAST_DIGEST=$(cat .last-upstream-digest)
+            echo "last_digest=$LAST_DIGEST" >> $GITHUB_OUTPUT
+            echo "Last known digest: $LAST_DIGEST"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No previous digest found"
+          fi
+
+      - name: Determine if build is needed
+        id: should_build
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Build triggered by push or manual dispatch"
+            echo "build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.check_file.outputs.exists }}" = "false" ]; then
+            echo "No previous digest found, building"
+            echo "build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.upstream.outputs.digest }}" != "${{ steps.check_file.outputs.last_digest }}" ]; then
+            echo "Upstream digest changed, building"
+            echo "build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Upstream digest unchanged, skipping build"
+            echo "build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.should_build.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: steps.should_build.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        if: steps.should_build.outputs.build == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix={{branch}}-
+            type=ref,event=branch
+
+      - name: Build and push Docker image
+        if: steps.should_build.outputs.build == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update digest file
+        if: steps.should_build.outputs.build == 'true'
+        run: |
+          echo "${{ steps.upstream.outputs.digest }}" > .last-upstream-digest
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last-upstream-digest
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update upstream digest [skip ci]" && git push)
